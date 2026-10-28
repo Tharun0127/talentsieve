@@ -19,9 +19,24 @@ from app.errors import LLMRateLimited, LLMServerError, LLMTimeout
 STOPWORDS = {"and", "the", "with", "for", "you", "our", "are", "will", "years", "year", "experience",
              "senior", "junior", "engineer", "developer", "work", "team", "using", "have", "this", "that"}
 
+# Recognisable skills. When a job description mentions some of these, only
+# they count as requirements; otherwise prose words like "hiring" or
+# "mentor" would make every score tiny.
+SKILLS = {"python", "fastapi", "django", "flask", "postgresql", "mysql", "redis", "docker", "kubernetes", "aws",
+          "gcp", "azure", "celery", "kafka", "sqlalchemy", "graphql", "terraform", "react", "typescript",
+          "javascript", "java", "spring", "go", "rust", "swift", "asyncio", "ci/cd", "rest", "apis", "sql",
+          "figma", "photoshop", "tableau", "excel", "salesforce", "seo"}
+
 
 def keywords(text: str) -> set[str]:
-    return {w for w in re.findall(r"[a-z][a-z0-9+#.]{1,}", text.lower()) if w not in STOPWORDS and len(w) > 2}
+    words = {w.strip(".,;:()") for w in re.findall(r"[a-z][a-z0-9+#./]{1,}", text.lower())}
+    return {w for w in words if w not in STOPWORDS and len(w) > 1}
+
+
+def requirements(job: str) -> set[str]:
+    wanted = keywords(job)
+    skills = wanted & SKILLS
+    return skills or wanted
 
 
 class MockLLM:
@@ -53,11 +68,13 @@ class MockLLM:
         return (job.group(1) if job else ""), (resume.group(1) if resume else "")
 
     def _answer(self, job: str, resume: str) -> dict:
-        wanted, have = keywords(job), keywords(resume)
+        wanted, have = requirements(job), keywords(resume)
         matched = sorted(wanted & have)
         missing = sorted(wanted - have)
         score = round(100 * len(matched) / len(wanted)) if wanted else 50
-        first_line = resume.strip().split("  ")[0].split(" Software")[0][:60] or None
+        # Sample resumes start with "First Last"; PDF text has no line breaks
+        # left after normalisation, so take the first two words.
+        first_line = " ".join(resume.split()[:2])[:60] or None
         strengths = [f"Has {m}" for m in matched[:3]]
         strengths += ["Relevant engineering background", "Clear CV structure", "Hands-on project work"]
         gaps = [f"No evidence of {m}" for m in missing[:3]]

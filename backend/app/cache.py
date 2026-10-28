@@ -21,7 +21,7 @@ from app.llm.base import ScoreResult
 from app.models import LLMCache
 from app.pdf import normalize
 
-PROMPT_VERSION = "v1"
+PROMPT_VERSION = "v2"  # bump when the prompt (or mock scoring) changes
 
 
 def cache_key(resume_text: str, job_description: str, provider: str) -> str:
