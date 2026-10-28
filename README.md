@@ -40,6 +40,10 @@ Details: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 |---|---|---|
 | ![Ranked results](docs/screenshots/ranked-results.png) | ![Failed jobs](docs/screenshots/failed-jobs.png) | ![Upload](docs/screenshots/upload.png) |
 
+| Live progress while 50 resumes are scored: done, processing, queued, and jobs retrying after transient LLM errors |
+|---|
+| ![Live progress](docs/screenshots/live-progress.png) |
+
 ## Architecture
 
 ```mermaid
