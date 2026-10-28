@@ -115,6 +115,29 @@ async def api_factory(db, redis_client):
         yield make
 
 
+async def run_worker_until_idle(settings: Settings, provider=None, timeout: float = 60) -> None:
+    """Run a REAL ARQ worker (burst mode) until the queue is empty, including
+    deferred retries. `provider` lets a test inject a MockLLM it can inspect."""
+    from arq.worker import Worker
+
+    from app.worker import worker_options
+
+    options = worker_options(settings)
+    startup = options["on_startup"]
+
+    async def on_startup(ctx):
+        await startup(ctx)
+        if provider is not None:
+            ctx["deps"].provider = provider
+
+    options["on_startup"] = on_startup
+    worker = Worker(**options, burst=True, poll_delay=0.02, handle_signals=False)
+    try:
+        await asyncio.wait_for(worker.main(), timeout)
+    finally:
+        await worker.close()
+
+
 async def upload(client, headers, files: list[tuple[str, bytes]], title="Backend hire", jd=JOB_DESCRIPTION):
     return await client.post(
         "/batches", headers=headers, data={"title": title, "job_description": jd},
