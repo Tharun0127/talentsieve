@@ -1,0 +1,93 @@
+name: talentsieve
+
+# api accepts uploads and enqueues jobs; workers do the slow work.
+# Scale workers with:  docker compose up -d --scale worker=4
+
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql+asyncpg://sieve:sieve@db:5432/talentsieve
+  TEST_DATABASE_URL: postgresql+asyncpg://sieve:sieve@db:5432/talentsieve_test
+  REDIS_URL: redis://redis:6379/0
+  TEST_REDIS_URL: redis://redis:6379/15
+  UPLOAD_DIR: /data/uploads
+  JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
+  # No key -> MockLLM. Put a real key in .env (never commit it).
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  LLM_PROVIDER: ${LLM_PROVIDER:-auto}
+  MOCK_LLM_MIN_DELAY: ${MOCK_LLM_MIN_DELAY:-0.5}
+  MOCK_LLM_MAX_DELAY: ${MOCK_LLM_MAX_DELAY:-2.0}
+  MOCK_LLM_FAILURE_RATE: ${MOCK_LLM_FAILURE_RATE:-0.1}
+  LLM_RATE_LIMIT_PER_MINUTE: ${LLM_RATE_LIMIT_PER_MINUTE:-120}
+  WORKER_CONCURRENCY: ${WORKER_CONCURRENCY:-4}
+
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: talentsieve-db
+    environment:
+      POSTGRES_USER: sieve
+      POSTGRES_PASSWORD: sieve
+      POSTGRES_DB: talentsieve
+    ports:
+      - "5434:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sieve -d talentsieve"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  redis:
+    image: redis:7-alpine
+    container_name: talentsieve-redis
+    # AOF on: the queue itself lives in Redis, so losing Redis on restart
+    # would lose queued jobs. (Compare: the cache-only Redis in Warpcart.)
+    command: redis-server --appendonly yes --appendfsync everysec
+    ports:
+      - "6374:6379"
+    volumes:
+      - redisdata:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  api:
+    build: ./backend
+    container_name: talentsieve-api
+    environment:
+      <<: *backend-env
+      ROLE: api
+    ports:
+      - "8004:8000"
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  worker:
+    build: ./backend
+    # No container_name and no ports, so `--scale worker=N` works.
+    environment:
+      <<: *backend-env
+      ROLE: worker
+    volumes:
+      - uploads:/data/uploads
+    depends_on:
+      api:
+        condition: service_healthy
+
+volumes:
+  pgdata:
+  redisdata:
+  uploads:
