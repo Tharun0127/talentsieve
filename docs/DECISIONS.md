@@ -131,3 +131,17 @@ Read from ARQ 0.26's source (`arq/worker.py`), and demonstrated by a test that `
 - **Live progress bar via `EventSource`** with per-status counts; the table refreshes as results land, ranked by score, with expandable strengths and gaps and a "from cache" marker.
 - **Failed-jobs page** = the DLQ, with each job's reason, Retry per job and Retry all. Failed rows on a batch page also have a Retry button.
 - The nginx proxy turns off response buffering for the API (`proxy_buffering off`), otherwise SSE events arrive in bursts instead of live, and allows ~260 MB request bodies (50 × 5 MB).
+
+## When we would move to RabbitMQ or Kafka
+
+ARQ on Redis is right for **this** workload: thousands of independent, I/O-bound jobs a day, one team, Redis already running. We would move when one of these becomes true:
+
+| Need | Why Redis + ARQ falls short | Move to |
+|---|---|---|
+| Strong delivery guarantees across broker failures | One Redis node (even with AOF) can lose the last second of writes on a crash; failover needs Sentinel/Cluster | **RabbitMQ** (quorum queues, publisher confirms, per-message acks) |
+| Complex routing (by type, priority, tenant), many consumer types | ARQ has one sorted set per queue name; no exchanges or routing keys | **RabbitMQ** (exchanges, bindings, priority queues, built-in dead-letter exchange) |
+| Many services consuming the same events, and replaying history ("re-score every resume with the new prompt") | A job is deleted once done; there is no log to replay | **Kafka** (durable partitioned log, consumer groups, replay by offset, retention for days) |
+| Very high throughput (100k+ messages/s) or strict ordering per key | Redis is single-threaded per shard; ARQ polls | **Kafka** (partitioned by key, e.g. batch id, for ordering) |
+| Workers in several languages | ARQ is Python-only | RabbitMQ or Kafka (clients everywhere) |
+
+Two things stay the same after any such move: **idempotent consumers** (RabbitMQ and Kafka are at-least-once in practice too) and an **explicit transient/permanent split with a dead-letter queue** (RabbitMQ's dead-letter exchange, or a Kafka retry/DLQ topic pattern).
