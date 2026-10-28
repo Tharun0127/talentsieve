@@ -48,3 +48,20 @@ The whole codebase (FastAPI, SQLAlchemy async, redis.asyncio) is async, the work
 ## Progress counters that cannot drift
 
 - `progress:<batch>:status` (resume → status) and `progress:<batch>:counts` (status → n), changed **only** by one Lua script that moves a resume from its old status to its new one. Repeating a move is a no-op, so a job that runs twice cannot double-count. Plain `HINCRBY` counters would drift in exactly the crash/retry cases this project is about.
+
+## Retries: transient vs permanent, made explicit
+
+- `app/errors.py` defines two base classes. Every failure is one or the other:
+  - **TransientError:** LLM timeout, 429, 5xx, invalid JSON from the model. Retried.
+  - **PermanentError:** corrupt or encrypted PDF, no extractable text, resume deleted, 400/401 from the provider. **Not** retried.
+- **Unknown exceptions are treated as transient.** A retry costs a little; wrongly dead-lettering a recoverable job loses a candidate. The error message says `unexpected` so bugs stand out in the DLQ.
+- **Up to 5 attempts, exponential backoff with full jitter:** `random(0, min(60 s, 2 s × 2^(attempt-1)))`. Exponential gives a struggling API room; *full* jitter keeps 50 jobs that failed together from retrying together and failing together again.
+- **Mechanism:** ARQ's `Retry(defer=delay)` puts the **same** job back in the queue with a future run time. The resume shows `queued` with the last error while it waits.
+- **Proven in tests:** a provider that fails twice then works ends `done` after 3 attempts; one that always fails is dead-lettered after exactly 5 LLM calls; a corrupt PDF is dead-lettered after 1 attempt with **0** LLM calls.
+
+## Dead-letter queue
+
+- **Two records:** Postgres (`status = 'dead'`, `error` = reason, `attempts`) is the durable, queryable truth shown in the UI. A Redis list `<queue>:dlq` of resume ids, newest first, is the operational view.
+- **The list holds ids, not JSON blobs,** so `LREM` + `LPUSH` makes dead-lettering idempotent (a duplicate run cannot add a second entry), and details are never out of sync with the database.
+- **Retry endpoint** (`POST /admin/dlq/{id}/retry`, `POST /admin/dlq/retry-all`): resets the attempt budget, bumps `generation` (so ARQ gets a new job id; the old id may still have a stored result), removes the id from the list and enqueues. The `UPDATE ... WHERE status = 'dead' RETURNING` makes a double click a no-op.
+- **Scoped per recruiter:** you see and retry only your own batches' jobs.

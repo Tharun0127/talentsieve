@@ -9,7 +9,7 @@ from redis.asyncio import Redis
 from app import queue
 from app.config import Settings, get_settings
 from app.db import build_engine, build_session_factory
-from app.routers import auth, batches
+from app.routers import admin, auth, batches
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
@@ -40,6 +40,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     app = FastAPI(title="TalentSieve", lifespan=lifespan)
     app.include_router(auth.router)
     app.include_router(batches.router)
+    app.include_router(admin.router)
 
     @app.get("/health")
     async def health() -> dict:
