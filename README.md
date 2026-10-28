@@ -33,6 +33,13 @@ depth: **background job processing with a message queue**.
 
 Details: [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 
+
+## Screenshots
+
+| Ranked results with live progress (SSE) | Failed jobs (dead-letter queue) with retry | Upload |
+|---|---|---|
+| ![Ranked results](docs/screenshots/ranked-results.png) | ![Failed jobs](docs/screenshots/failed-jobs.png) | ![Upload](docs/screenshots/upload.png) |
+
 ## Architecture
 
 ```mermaid
