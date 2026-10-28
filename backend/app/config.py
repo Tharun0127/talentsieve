@@ -26,7 +26,9 @@ class Settings(BaseSettings):
     # auto: Anthropic when a key is set, otherwise MockLLM.
     llm_provider: Literal["auto", "mock", "anthropic"] = "auto"
     anthropic_api_key: str = ""
-    anthropic_model: str = "claude-haiku-5-5"
+    anthropic_model: str = "claude-opus-5-5"
+    anthropic_effort: Literal["low", "medium", "high", "xhigh", "max"] = "low"
+    anthropic_fallbacks: bool = True
     llm_timeout_seconds: float = 60
     mock_llm_min_delay: float = 0.5
     mock_llm_max_delay: float = 2.0

@@ -12,6 +12,9 @@ x-backend-env: &backend-env
   JWT_SECRET: ${JWT_SECRET:-change-me-in-production}
   # No key -> MockLLM. Put a real key in .env (never commit it).
   ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  ANTHROPIC_MODEL: ${ANTHROPIC_MODEL:-claude-opus-5-5}
+  ANTHROPIC_EFFORT: ${ANTHROPIC_EFFORT:-low}
+  ANTHROPIC_FALLBACKS: ${ANTHROPIC_FALLBACKS:-true}
   LLM_PROVIDER: ${LLM_PROVIDER:-auto}
   MOCK_LLM_MIN_DELAY: ${MOCK_LLM_MIN_DELAY:-0.5}
   MOCK_LLM_MAX_DELAY: ${MOCK_LLM_MAX_DELAY:-2.0}
@@ -86,6 +89,14 @@ services:
     depends_on:
       api:
         condition: service_healthy
+
+  frontend:
+    build: ./frontend
+    container_name: talentsieve-frontend
+    ports:
+      - "5174:80"
+    depends_on:
+      - api
 
 volumes:
   pgdata:

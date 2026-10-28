@@ -115,3 +115,19 @@ Read from ARQ 0.26's source (`arq/worker.py`), and demonstrated by a test that `
 - **Prompt version and provider are part of the key:** change the prompt or the model and old answers are no longer reused.
 - **Stored in Postgres, not Redis:** it saves money, so it must survive a Redis restart. `hits` counts reuse for reporting.
 - A result served from the cache is still saved per resume (with `cached = true`) and shown like any other.
+
+## Real LLM provider (Anthropic)
+
+- **Official `anthropic` SDK** (`AsyncAnthropic`), selected automatically when `ANTHROPIC_API_KEY` is set. Without a key the project runs entirely on MockLLM. Keys live only in `.env` (git-ignored); `.env.example` documents the variables.
+- **SDK retries disabled (`max_retries=0`).** The queue already retries with backoff, counts attempts, respects the global rate limit and dead-letters. A second, hidden retry layer inside the SDK would multiply calls and make attempt counts lie.
+- **Structured outputs** (`output_config.format` with a JSON schema) make the API return JSON in our exact shape; Pydantic still validates it (exactly 3 strengths and gaps, score 0-100).
+- **Model `claude-opus-5-5` by default with effort `low`.** Scoring one resume is close to classification, so low effort keeps cost and latency down. Both are environment variables (`ANTHROPIC_MODEL`, `ANTHROPIC_EFFORT`) if a team wants a cheaper model or deeper reasoning.
+- **Server-side refusal fallbacks on** (`fallbacks: "default"`, toggle `ANTHROPIC_FALLBACKS`). If the model declines and the fallback also declines, it is a **permanent** error, because asking again would decline again.
+- **Error policy in one function** (`classify_status`): 429 → rate limited, 5xx including 529 overloaded → server error, 408 → timeout (all transient); 400/401/403/404/422 → permanent. Connection errors and timeouts are transient; a `max_tokens` cut-off or missing text counts as bad output (transient).
+
+## Frontend
+
+- Upload form (title, job description, up to 50 PDFs). After upload it navigates to the batch page immediately, because the API already returned.
+- **Live progress bar via `EventSource`** with per-status counts; the table refreshes as results land, ranked by score, with expandable strengths and gaps and a "from cache" marker.
+- **Failed-jobs page** = the DLQ, with each job's reason, Retry per job and Retry all. Failed rows on a batch page also have a Retry button.
+- The nginx proxy turns off response buffering for the API (`proxy_buffering off`), otherwise SSE events arrive in bursts instead of live, and allows ~260 MB request bodies (50 × 5 MB).
