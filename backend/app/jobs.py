@@ -17,7 +17,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
-from app import pdf, progress
+from app import cache, pdf, progress, ratelimit
 from app.config import Settings
 from app.errors import MissingRecord
 from app.llm.base import LLMProvider, ScoreResult, score_resume
@@ -82,8 +82,20 @@ async def already_done(deps: JobDeps, resume: Resume) -> bool:
 
 
 async def get_score(deps: JobDeps, resume_text: str, job_description: str) -> tuple[ScoreResult, bool]:
-    """Phase 5 adds the cache and the global rate limiter here."""
-    return await score_resume(deps.provider, resume_text, job_description), False
+    """Cache first (free), otherwise wait for a global rate-limit slot and
+    ask the LLM. Returns (result, came_from_cache)."""
+    key = cache.cache_key(resume_text, job_description, deps.provider.name)
+    cached = await cache.get(deps.session_factory, key)
+    if cached is not None:
+        return cached, True
+
+    settings = deps.settings
+    waited = await ratelimit.acquire(deps.redis, settings.llm_rate_limit_per_minute, settings.llm_rate_window_seconds)
+    if waited > 1:
+        logger.info("waited %.1fs for a global LLM rate-limit slot", waited)
+    result = await score_resume(deps.provider, resume_text, job_description)
+    await cache.put(deps.session_factory, key, result, deps.provider.name)
+    return result, False
 
 
 async def process_resume(deps: JobDeps, resume_id: uuid.UUID, attempt: int) -> str:

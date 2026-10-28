@@ -92,3 +92,26 @@ Read from ARQ 0.26's source (`arq/worker.py`), and demonstrated by a test that `
 **Trade-off:** a shorter `job_timeout` means faster recovery, but jobs legitimately slower than the timeout get cancelled and retried. 120 s is roughly 6× a slow LLM call.
 
 **Graceful shutdown** (`SIGTERM`, for example a deploy) is different: ARQ cancels running jobs and they are retried, so nothing waits for the lock to expire.
+
+## Progress streaming: Server-Sent Events
+
+- `GET /batches/{id}/events?token=...` streams the batch's counts (`queued`, `processing`, `done`, `dead`, `total`) whenever they change, and ends with `event: complete`.
+- **Why SSE, not WebSockets:** progress flows one way (server → browser). SSE is plain HTTP that works through any proxy, and the browser's `EventSource` reconnects on its own. WebSockets would add a bidirectional protocol we do not need. (The sibling project Pulsewire uses WebSockets because chat is two-way.)
+- **Polling Redis every 500 ms inside the stream** instead of pub/sub: one `HGETALL` per open progress page is trivial, it cannot miss an update (it always reads the current state), and the stream needs no per-connection subscription bookkeeping.
+- A `: keep-alive` comment every 15 s keeps idle-connection timeouts in proxies from closing a quiet stream; `X-Accel-Buffering: no` stops nginx-style proxies from buffering it.
+- The token is in the query string because `EventSource` cannot set headers.
+
+## Global LLM rate limit
+
+- **A sliding-window log in a Redis sorted set**, checked and updated in one Lua script. Every worker process shares it, so 4 workers together still make at most `LLM_RATE_LIMIT_PER_MINUTE` calls. A per-process limiter would allow 4×.
+- **Redis's own clock (`TIME`)**, so workers on machines with skewed clocks still agree on the window.
+- **Sliding, not fixed, window:** a fixed "per calendar minute" counter lets 2× the limit through around the minute boundary.
+- **Waiting, not failing:** a worker that gets no slot sleeps until the oldest call leaves the window (plus jitter) and tries again. Nothing is dead-lettered for being throttled locally. A 429 from the real provider is still a transient error and goes through the retry path.
+- **Test:** 4 independent Redis connections × 5 jobs with a limit of 5 per second: no 1-second window ever contains more than 5 grants, and the 20 calls take at least 3 seconds.
+
+## Cost control: LLM result cache
+
+- Key = `sha256(prompt version, provider, normalised resume text, normalised job description)`. A re-uploaded CV for the same role is answered from Postgres: **no LLM call and no rate-limit slot used** (both tested).
+- **Prompt version and provider are part of the key:** change the prompt or the model and old answers are no longer reused.
+- **Stored in Postgres, not Redis:** it saves money, so it must survive a Redis restart. `hits` counts reuse for reporting.
+- A result served from the cache is still saved per resume (with `cached = true`) and shown like any other.

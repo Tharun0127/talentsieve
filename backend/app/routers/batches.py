@@ -4,16 +4,21 @@ The API never parses PDFs or calls the LLM. Upload = save files, insert
 rows, enqueue one job per resume, return 202 with the batch id. Everything
 slow happens in the workers.
 """
+import asyncio
+import json
 import os
 import uuid
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi.responses import StreamingResponse
 from sqlalchemy import func, select
 
-from app.auth import current_user_id
+from app import progress
+from app.auth import current_user_id, user_id_from_query_token
 from app.models import QUEUED, Batch, Resume, Result
 
 router = APIRouter(prefix="/batches", tags=["batches"])
+POLL_SECONDS = 0.5
 
 
 async def read_upload(upload: UploadFile, max_bytes: int) -> bytes:
@@ -117,6 +122,40 @@ async def get_batch(batch_id: uuid.UUID, request: Request, user_id: int = Depend
         "total": batch.total, "created_at": batch.created_at.isoformat(), "counts": counts,
         "resumes": [resume_out(resume, result) for resume, result in rows],
     }
+
+
+@router.get("/{batch_id}/events")
+async def batch_events(batch_id: uuid.UUID, request: Request, user_id: int = Depends(user_id_from_query_token)):
+    """Live progress as Server-Sent Events.
+
+    SSE, not WebSockets: progress only flows server -> browser, SSE is plain
+    HTTP (works through any proxy), and the browser's EventSource reconnects
+    by itself. Each event is the current counts; the stream ends with an
+    `event: complete` once every resume is done or dead.
+    """
+    batch = await owned_batch(request, batch_id, user_id)
+    return StreamingResponse(progress_stream(request, batch), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+async def progress_stream(request: Request, batch: Batch):
+    redis = request.app.state.redis
+    last, idle = None, 0.0
+    while not await request.is_disconnected():
+        counts = await progress.counts(redis, batch.id)
+        snapshot = {**counts, "total": batch.total}
+        if snapshot != last:
+            yield f"data: {json.dumps(snapshot)}\n\n"
+            last, idle = snapshot, 0.0
+        if counts["done"] + counts["dead"] >= batch.total:
+            yield f"event: complete\ndata: {json.dumps(snapshot)}\n\n"
+            return
+        await asyncio.sleep(POLL_SECONDS)
+        idle += POLL_SECONDS
+        if idle >= 15:
+            # A comment line keeps proxies from closing a quiet connection.
+            yield ": keep-alive\n\n"
+            idle = 0.0
 
 
 def resume_out(resume: Resume, result: Result | None) -> dict:
